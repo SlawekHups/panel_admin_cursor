@@ -1,0 +1,246 @@
+# ROLA
+Jesteś asystentem-inżynierem w Cursorze. Masz wygenerować i zmodyfikować projekt Laravel (11.x) z Filament v4, tak aby powstał profesjonalny panel podobny do BaseLinkera: zarządzanie użytkownikami/rolami, prerejestracja i zaproszenia e-mail/SMS (SMSAPI), integracja z PrestaShop (zamówienia, klienci, produkty), obsługa wysyłek InPost (paczkomaty), faktury, powiadomienia. Dbaj o czystość architektury (DDD-ish/modules), bezpieczeństwo, kolejkowanie i testy. Zmieniaj i twórz pliki zgodnie z planem niżej.
+
+# ZAŁOŻENIA I STOS
+- PHP 8.3, Laravel 11.x, Filament v4, MySQL 8, Redis (kolejki/cache), Horizon.
+- spatie/laravel-permission (role/permissions).
+- Prerejestracja oraz zaproszenia: unikatowe tokeny, ważność, limity, rejestracja po linku/email/SMS.
+- Powiadomienia: mail (Laravel Mail), SMS (smsapi.com – REST), powiadomienia systemowe (database notifications + Filament Notifications).
+- Integracje:
+  - PrestaShop 1.7/8: REST Webservice (klucz API) – synchronizacja zamówień, klientów, produktów, statusów.
+  - InPost ShipX API: tworzenie przesyłek, etykiety, śledzenie; typ „paczkomat”.
+  - Faktury: własny moduł Invoice + możliwość podpięcia zewn. API w przyszłości (port adapter).
+- Import/sync uruchamiany CRON + ręcznie z panelu (Filament actions). Webhooki odbierane przez kontrolery, walidowane podpisem.
+- Wszystkie operacje I/O przez Jobs (queued), retriable, idempotentne. Logowanie zdarzeń (Audit Log).
+- Testy: Pest + feature/integration dla krytycznych ścieżek.
+
+# STRUKTURA PROJEKTU (KLUCZOWE MODUŁY)
+app/
+  Domain/
+    Users/ (User, Invitation, Policies)
+    Catalog/ (Product, Category)
+    Sales/ (Order, OrderItem, Payment, Shipment)
+    Invoicing/ (Invoice, InvoiceItem)
+    Shipping/ (Carrier, ShipmentLabel)
+    Integrations/
+      PrestaShop/ (DTOs, Mappers, Client)
+      InPost/ (Client, Webhooks)
+      SMSAPI/ (Client)
+  Actions/ (UseCases)
+  Jobs/
+  Services/
+  Support/ (Result objects, DTOs, Enums)
+  Notifications/
+  Http/Controllers/Api/Webhooks/
+  Filament/ (Resources, Pages, Widgets)
+
+# ENV (DODAJ TE KLUCZE)
+PRESTASHOP_BASE_URL=
+PRESTASHOP_API_KEY=
+INPOST_BASE_URL=https://api-shipx-pl.easypack24.net
+INPOST_API_TOKEN=
+SMSAPI_BASE_URL=https://api.smsapi.pl
+SMSAPI_TOKEN=
+APP_URL=
+FRONT_REGISTRATION_URL= (jeśli front osobny)
+QUEUE_CONNECTION=redis
+CACHE_DRIVER=redis
+SESSION_DRIVER=redis
+
+# MIGRACJE I MODELE (UTWÓRZ/UZUPEŁNIJ)
+- users: name, email(unique), phone(nullable, unique), password, status(enum: active, invited, pending), last_login_at, timestamps.
+- invitations: id, email, phone, token(unique), expires_at, inviter_id(fk), accepted_at(nullable), metadata(json), timestamps.
+- roles/permissions (spatie).
+- products: external_id(unique), sku, name, price, tax_rate, stock, status, payload(json), timestamps.
+- customers: external_id(unique), email, phone, first_name, last_name, payload(json).
+- orders: external_id(unique), number, customer_id(fk), status, currency, total_gross, total_net, shipping_method, paid_at(nullable), payload(json).
+- order_items: order_id(fk), product_id(nullable fk), name, sku, qty, price_gross, price_net, tax_rate, payload(json).
+- invoices: order_id(fk), number, total_gross, total_net, issued_at, payload(json), pdf_path(nullable).
+- shipments: order_id(fk), carrier(enum: inpost), service_type(enum: parcel_locker,courier), tracking_number(nullable), label_path(nullable), status, payload(json).
+- audit_logs: id, user_id(nullable), action, subject_type, subject_id, meta(json), created_at.
+
+# PAKIETY I INSTALACJA (WYKONAJ)
+- Dodaj do composer:
+  - filament/filament:^4.0
+  - spatie/laravel-permission
+  - laravel/horizon
+  - guzzlehttp/guzzle
+  - pestphp/pest --dev
+- Skonfiguruj spatie-permission (Provider, publikuje migracje), Horizon, kolejki (redis).
+- Filament: panel admina + uwierzytelnianie przez Laravel.
+
+# RUTY/BEZPIECZEŃSTWO
+- API Webhooks (POST):
+  - /webhooks/prestashop (podpis/secret lub allowlist IP)
+  - /webhooks/inpost
+- Signed routes dla zaproszeń: /invite/accept/{token}
+- Filament middleware: auth + permission checks.
+- CSRF dla panelu, rate limiting dla API, form requests + DTO mapping.
+
+# KLIENTY INTEGRACJI (UTWÓRZ)
+app/Integrations/PrestaShop/PrestaShopClient.php
+- Metody: getOrders(since?), getOrderById, getCustomers, getProducts, updateOrderStatus
+- Nagłówki: Autoryzacja key, Accept JSON/XML (prefer JSON → jeśli tylko XML, dodaj parser).
+- Paginacja i incremental sync (updated_since).
+
+app/Integrations/InPost/InPostClient.php
+- createShipment(orderDTO), getLabel(tracking), getTracking(tracking).
+- Obsługa ShipX token, retry/backoff.
+
+app/Integrations/SMSAPI/SMSApiClient.php
+- sendSms(phone, message, from?), handleErrors().
+
+# AKCJE I JOBY (UTWÓRZ)
+- Actions:
+  - Users\CreateInvitation (walidacja, generacja tokenu, zapis, wysyłka linku mail/SMS).
+  - Users\AcceptInvitation (tworzy konto/ustawia hasło, przypisuje role).
+  - Sales\SyncOrdersFromPrestaShop (stronicowanie, mapowanie → Order/Items/Customer).
+  - Shipping\CreateInPostShipmentForOrder
+  - Invoicing\GenerateInvoiceForOrder
+- Jobs (queued, idempotent key = external_id):
+  - PullPrestaShopOrdersJob
+  - SyncProductsJob, SyncCustomersJob
+  - CreateInPostShipmentJob
+  - GenerateInvoicePdfJob
+  - SendOrderEventNotificationsJob
+
+# POLITYKI I UPRAWNIENIA (SPATIE)
+- Role: SuperAdmin, Admin, Operator, Viewer.
+- Uprawnienia granularne: users.manage, orders.view, orders.update, products.view, shipments.manage, invoices.manage, settings.manage.
+- Zasady: SuperAdmin = all; Admin zgodnie z permissions; Filament z policy gates.
+
+# FILAMENT v4 – ZASOBY I STRONY (UTWÓRZ)
+Resources:
+- UserResource (index, create, edit) → akcja "Zaproś użytkownika" (otwiera modal z email/phone/role, wywołuje CreateInvitation).
+- InvitationResource (read-only list, revoke).
+- OrderResource (index: kolumny status, number, customer, total, updated; show: sekcje items, payments, shipments, historia zdarzeń; akcje: „Pobierz z PrestaShop”, „Utwórz przesyłkę InPost”, „Wystaw fakturę”, „Wyślij powiadomienie”).
+- ProductResource, CustomerResource.
+- ShipmentResource (podgląd etykiety, link do śledzenia).
+- InvoiceResource (podgląd PDF).
+Pages/Widgets:
+- Dashboard: widżety KPI (dzienne zamówienia, GMV, statusy), wykresy.
+- SettingsPage: integracje (formularze .env + test połączenia).
+- LogsPage: audit log.
+
+# WEBHOOKI (UTWÓRZ KONTROLERY)
+- PrestaShopWebhookController@handle:
+  - Walidacja podpisu/secret.
+  - Rozpoznanie eventu (order.updated, order.created itp.)
+  - Dispatch odpowiednich Jobs (idempotencja).
+- InPostWebhookController@handle:
+  - Aktualizacja statusów przesyłek → powiadomienia + timeline orderu.
+
+# POWIADOMIENIA
+- Mailables + Notification channels (database + broadcast opcjonalnie).
+- SMS przez SMSApiClient.
+- Scenariusze: nowe zamówienie, status zamówienia zmieniony, przesyłka utworzona/zaktualizowana, faktura gotowa, zaproszenie użytkownika.
+
+# KOMENDY ARTISAN (DODAJ)
+- php artisan prestashop:sync {--since=}  (wywołuje Jobs dla orders/customers/products)
+- php artisan inpost:sync-tracking
+- php artisan users:invite {email?} {--phone=} {--role=}
+
+# PRZYKŁADOWE FRAGMENTY KODU (UTWÓRZ/EDYTUJ PLIKI)
+
+## routes/web.php (fragment)
+Route::get('/invite/accept/{token}', [\App\Http\Controllers\Auth\AcceptInvitationController::class, 'show'])
+    ->name('invite.accept');
+Route::post('/invite/accept/{token}', [\App\Http\Controllers\Auth\AcceptInvitationController::class, 'store']);
+
+## routes/api.php (fragment)
+Route::post('/webhooks/prestashop', [\App\Http\Controllers\Api\Webhooks\PrestaShopWebhookController::class, 'handle']);
+Route::post('/webhooks/inpost', [\App\Http\Controllers\Api\Webhooks\InPostWebhookController::class, 'handle']);
+
+## app/Actions/Users/CreateInvitation.php (zarys)
+public function __invoke(string $email = null, string $phone = null, array $roles = []): Invitation
+{
+    $token = Str::uuid()->toString();
+    $inv = Invitation::create([
+        'email' => $email,
+        'phone' => $phone,
+        'token' => $token,
+        'expires_at' => now()->addDays(7),
+        'inviter_id' => auth()->id(),
+    ]);
+
+    if ($email) Notification::route('mail', $email)->notify(new InvitationNotification($inv));
+    if ($phone) app(SMSApiClient::class)->sendSms($phone, url(route('invite.accept', $token)));
+
+    return $inv;
+}
+
+## app/Integrations/PrestaShop/PrestaShopClient.php (zarys)
+class PrestaShopClient {
+    public function __construct(private Client $http, private string $baseUrl, private string $apiKey) {}
+    private function request(string $method, string $uri, array $opts = []): array {
+        $opts['auth'] = [$this->apiKey, ''];
+        $resp = $this->http->request($method, rtrim($this->baseUrl,'/').'/'.$uri, $opts);
+        return json_decode($resp->getBody()->getContents(), true);
+    }
+    public function getOrders(?Carbon $since = null, int $page = 1, int $perPage = 100): array { /* ... */ }
+}
+
+## app/Integrations/InPost/InPostClient.php (zarys)
+class InPostClient {
+    public function createShipment(array $payload): array { /* map from Order → ShipX */ }
+    public function getLabel(string $tracking): string { /* returns PDF path/base64 */ }
+}
+
+## app/Integrations/SMSAPI/SMSApiClient.php (zarys)
+class SMSApiClient {
+    public function sendSms(string $phone, string $message): void { /* POST /sms.do or /messages */ }
+}
+
+## app/Filament/Resources/OrderResource.php (fragment akcji)
+Tables\Actions\Action::make('create_inpost_shipment')
+  ->label('Utwórz przesyłkę InPost')
+  ->requiresConfirmation()
+  ->action(fn(Order $record) => dispatch(new CreateInPostShipmentJob($record->id)));
+
+# TESTY (PEST) – PRZYKŁADY
+- tests/Feature/InvitationFlowTest.php: tworzenie zaproszenia, wysyłka mail/SMS (fake), akceptacja, nadanie ról.
+- tests/Feature/PrestaShopSyncTest.php: stub HTTP, import orderu idempotentnie.
+- tests/Feature/InPostShipmentTest.php: utworzenie przesyłki, pobranie etykiety.
+- tests/Feature/FilamentPoliciesTest.php: dostępność zasobów wg roli.
+
+# UX PANELU (KLUCZOWE SZCZEGÓŁY)
+- Dashboard: karty KPI, filtr dat, szybkie akcje.
+- Order show: timeline zdarzeń (import, płatność, wysyłka, faktura), zakładki (Szczegóły, Pozycje, Przesyłka, Faktura, Logi).
+- Przyciski masowe (bulk): generuj przesyłki, zmień status, wyślij powiadomienia.
+
+# WALIDACJA & JAKOŚĆ
+- Wszystkie integracje za proxy serwisów + mapery DTO (oddzielić od Eloquent).
+- Idempotencja: klucz na external_id; upserts.
+- Retries z exponential backoff, obsługa błędów (HTTP 429/5xx).
+- Audyt: zapisz każde działanie użytkownika oraz każde zdarzenie integracyjne.
+- Konfiguracja feature flags (np. w .env) aby włączać/wyłączać integracje.
+
+# ZADANIA DLA CIEBIE (WYKONAJ TERAZ W PROJEKCIE)
+1) Skonfiguruj pakiety (composer, config, migracje, providers, Horizon).
+2) Dodaj migracje i modele wg schematu.
+3) Dodaj role/permissions oraz seeder ról podstawowych.
+4) Zainicjalizuj Filament v4; utwórz Resources (Users, Invitations, Orders, Products, Customers, Shipments, Invoices) z tabelami, filtrami i akcjami.
+5) Zaimplementuj Invitation flow (akcja + kontroler + powiadomienia).
+6) Dodaj trzech klientów integracyjnych (PrestaShop, InPost, SMSAPI) + konfigurację przez config/*.php.
+7) Napisz Actions/Jobs do synchronizacji i operacji (wymienione wyżej) + CRON (scheduler).
+8) Dodaj webhooks + weryfikację + mapowanie eventów.
+9) Dodaj Dashboard widgets + SettingsPage.
+10) Napisz testy przykładowe (Pest) dla kluczowych ścieżek.
+11) Uruchom phpstan/pint, dodaj CI (GitHub Actions) – build, tests.
+
+# AKCEPTACJA
+- Mogę zapraszać użytkowników e-mail/SMS, link działa, role przypisane.
+- Widzę zamówienia/klientów/produkty zsynchronizowane z PrestaShop (ręcznie i z CRON/webhook).
+- Mogę utworzyć przesyłkę InPost i pobrać etykietę.
+- Mogę wystawić i podejrzeć fakturę (PDF placeholder).
+- Działają powiadomienia (mail + SMS fake w testach, real w prod po skonfigurowaniu).
+- Dashboard pokazuje realne KPI.
+- Wszystko działa w kolejkach, z retry i logowaniem.
+
+# UWAGI
+- Nie używaj placeholderów typu TODO bez minimalnej implementacji.
+- Zadbaj o czysty kod, separację odpowiedzialności, typy, testy i obsługę błędów.
+- Jeżeli pewien endpoint PrestaShop zwraca XML – dodaj prosty parser i mapowanie do DTO.
+
+# NA WYJŚCIE
+Wprowadź wszystkie zmiany plików, dodaj niezbędne klasy/zasoby, i wypisz listę utworzonych/zmodyfikowanych plików na końcu wraz z krótkim opisem.
