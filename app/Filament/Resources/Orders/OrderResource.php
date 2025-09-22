@@ -20,6 +20,12 @@ class OrderResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;
 
+    protected static ?string $navigationLabel = 'Zamówienia';
+
+    protected static ?string $modelLabel = 'Zamówienie';
+
+    protected static ?string $pluralModelLabel = 'Zamówienia';
+
     public static function form(Schema $schema): Schema
     {
         return OrderForm::configure($schema);

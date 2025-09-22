@@ -13,6 +13,8 @@ use BackedEnum;
 use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
 use Filament\Notifications\Notification;
+use Illuminate\Support\Facades\Auth;
+use App\Models\User;
 
 class Settings extends Page implements HasForms
 {
@@ -20,8 +22,14 @@ class Settings extends Page implements HasForms
 
     protected static string|BackedEnum|null $navigationIcon = 'heroicon-o-cog-6-tooth';
     protected string $view = 'filament.pages.settings';
-    protected static ?string $navigationLabel = 'Settings';
-    protected static ?string $title = 'System Settings';
+    protected static ?string $navigationLabel = 'Ustawienia';
+    protected static ?string $title = 'Ustawienia systemu';
+
+    public static function canAccess(): bool
+    {
+        $user = Auth::user();
+        return $user instanceof User && $user->hasRole('SuperAdmin');
+    }
 
     public ?array $data = [];
 
@@ -42,45 +50,45 @@ class Settings extends Page implements HasForms
     {
         return $form
             ->schema([
-                Section::make('PrestaShop Integration')
+                Section::make('Integracja PrestaShop')
                     ->schema([
                         TextInput::make('prestashop_url')
-                            ->label('Base URL')
+                            ->label('URL bazowy')
                             ->url()
                             ->required(),
                         TextInput::make('prestashop_api_key')
-                            ->label('API Key')
+                            ->label('Klucz API')
                             ->password()
                             ->required(),
                     ])
                     ->columns(2),
 
-                Section::make('InPost Integration')
+                Section::make('Integracja InPost')
                     ->schema([
                         TextInput::make('inpost_api_token')
-                            ->label('API Token')
+                            ->label('Token API')
                             ->password()
                             ->required(),
                     ]),
 
-                Section::make('SMS API Integration')
+                Section::make('Integracja SMS API')
                     ->schema([
                         TextInput::make('smsapi_token')
-                            ->label('API Token')
+                            ->label('Token API')
                             ->password()
                             ->required(),
                     ]),
 
-                Section::make('System Settings')
+                Section::make('Ustawienia systemu')
                     ->schema([
                         Toggle::make('notifications_enabled')
-                            ->label('Enable Notifications')
+                            ->label('Włącz powiadomienia')
                             ->default(true),
                         Toggle::make('auto_sync_enabled')
-                            ->label('Enable Auto Sync')
+                            ->label('Włącz automatyczną synchronizację')
                             ->default(true),
                         TextInput::make('sync_interval')
-                            ->label('Sync Interval (minutes)')
+                            ->label('Interwał synchronizacji (minuty)')
                             ->numeric()
                             ->default(60),
                     ])
@@ -93,10 +101,10 @@ class Settings extends Page implements HasForms
     {
         return [
             Action::make('save')
-                ->label('Save Settings')
+                ->label('Zapisz ustawienia')
                 ->action('save'),
             Action::make('test_connections')
-                ->label('Test Connections')
+                ->label('Testuj połączenia')
                 ->color('info')
                 ->action('testConnections'),
         ];
@@ -115,7 +123,7 @@ class Settings extends Page implements HasForms
         ]);
 
         Notification::make()
-            ->title('Settings saved successfully!')
+            ->title('Ustawienia zostały zapisane!')
             ->success()
             ->send();
     }
@@ -127,12 +135,12 @@ class Settings extends Page implements HasForms
             $prestashopClient = app(\App\Integrations\PrestaShop\PrestaShopClient::class);
             // Add actual test call here
             Notification::make()
-                ->title('PrestaShop connection: OK')
+                ->title('Połączenie PrestaShop: OK')
                 ->success()
                 ->send();
         } catch (\Exception $e) {
             Notification::make()
-                ->title('PrestaShop connection failed')
+                ->title('Połączenie PrestaShop nieudane')
                 ->body($e->getMessage())
                 ->danger()
                 ->send();
@@ -143,12 +151,12 @@ class Settings extends Page implements HasForms
             $inpostClient = app(\App\Integrations\InPost\InPostClient::class);
             // Add actual test call here
             Notification::make()
-                ->title('InPost connection: OK')
+                ->title('Połączenie InPost: OK')
                 ->success()
                 ->send();
         } catch (\Exception $e) {
             Notification::make()
-                ->title('InPost connection failed')
+                ->title('Połączenie InPost nieudane')
                 ->body($e->getMessage())
                 ->danger()
                 ->send();

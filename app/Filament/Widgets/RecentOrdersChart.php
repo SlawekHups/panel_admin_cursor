@@ -8,7 +8,7 @@ use Illuminate\Support\Carbon;
 
 class RecentOrdersChart extends ChartWidget
 {
-    protected static ?string $heading = 'Orders Over Time';
+    protected ?string $heading = 'Orders Over Time';
 
     protected static ?int $sort = 2;
 
